@@ -39,6 +39,7 @@
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
+#include "common/state_machine.h"
 
 namespace peloton {
 namespace network {
@@ -82,29 +83,29 @@ class ConnectionHandle {
    * Handles a libevent event. This simply delegates the the state machine.
    */
   inline void HandleEvent(int, short) {
-    state_machine_.Accept(Transition::WAKEUP, *this);
+    state_machine_.Accept(ConnTransition::WAKEUP, *this);
   }
 
   /* State Machine Actions */
   // TODO(Tianyu): Write some documentation when feeling like it
-  inline Transition TryRead() { return io_wrapper_->FillReadBuffer(); }
+  inline ConnTransition TryRead() { return io_wrapper_->FillReadBuffer(); }
 
-  inline Transition TryWrite() {
+  inline ConnTransition TryWrite() {
     if (io_wrapper_->ShouldFlush())
       return io_wrapper_->FlushAllWrites();
-    return Transition::PROCEED;
+    return ConnTransition::PROCEED;
   }
 
-  inline Transition Process() {
+  inline ConnTransition Process() {
     return protocol_interpreter_->
         Process(io_wrapper_->GetReadBuffer(),
                 io_wrapper_->GetWriteQueue(),
                 [=] { event_active(workpool_event_, EV_WRITE, 0); });
   }
 
-  Transition GetResult();
-  Transition TrySslHandshake();
-  Transition TryCloseConnection();
+  ConnTransition GetResult();
+  ConnTransition TrySslHandshake();
+  ConnTransition TryCloseConnection();
 
   /**
    * Updates the event flags of the network event. This configures how the
@@ -127,63 +128,22 @@ class ConnectionHandle {
   }
 
  private:
-  /**
-   * A state machine is defined to be a set of states, a set of symbols it
-   * supports, and a function mapping each
-   * state and symbol pair to the state it should transition to. i.e.
-   * transition_graph = state * symbol -> state
-   *
-   * In addition to the transition system, our network state machine also needs
-   * to perform actions. Actions are
-   * defined as functions (lambdas, or closures, in various other languages) and
-   * is promised to be invoked by the
-   * state machine after each transition if registered in the transition graph.
-   *
-   * So the transition graph overall has type transition_graph = state * symbol
-   * -> state * action
-   */
-  class StateMachine {
-   public:
-    using action = Transition (*)(ConnectionHandle &);
-    using transition_result = std::pair<ConnState, action>;
-    /**
-     * Runs the internal state machine, starting from the symbol given, until no
-     * more
-     * symbols are available.
-     *
-     * Each state of the state machine defines a map from a transition symbol to
-     * an action
-     * and the next state it should go to. The actions can either generate the
-     * next symbol,
-     * which means the state machine will continue to run on the generated
-     * symbol, or signal
-     * that there is no more symbols that can be generated, at which point the
-     * state machine
-     * will stop running and return, waiting for an external event (user
-     * interaction, or system event)
-     * to generate the next symbol.
-     *
-     * @param action starting symbol
-     * @param connection the network connection object to apply actions to
-     */
-    void Accept(Transition action, ConnectionHandle &connection);
 
-   private:
-    /**
-     * delta is the transition function that defines, for each state, its
-     * behavior and the
-     * next state it should go to.
-     */
-    static transition_result Delta_(ConnState state, Transition transition);
-    ConnState current_state_ = ConnState::READ;
+  class ConnStateMachine : StateMachine<ConnState, ConnTransition,
+      ConnectionHandle, NetworkProcessException> {
+   public:
+    ConnStateMachine() : StateMachine(ConnState::READ) {};
+
+   protected:
+    transition_result Delta_(ConnState state, ConnTransition transition) override;
   };
 
-  friend class StateMachine;
+  friend class ConnStateMachine;
   friend class NetworkIoWrapperFactory;
 
   ConnectionHandlerTask *conn_handler_;
   std::shared_ptr<NetworkIoWrapper> io_wrapper_;
-  StateMachine state_machine_;
+  ConnStateMachine state_machine_;
   struct event *network_event_ = nullptr, *workpool_event_ = nullptr;
 
   // TODO(Tianyu): Probably use a factory for this

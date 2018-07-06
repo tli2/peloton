@@ -40,14 +40,14 @@ class NetworkIoWrapper {
  public:
   virtual bool SslAble() const = 0;
   // TODO(Tianyu): Change and document after we refactor protocol handler
-  virtual Transition FillReadBuffer() = 0;
-  virtual Transition FlushWriteBuffer(WriteBuffer &wbuf) = 0;
-  virtual Transition Close() = 0;
+  virtual ConnTransition FillReadBuffer() = 0;
+  virtual ConnTransition FlushWriteBuffer(WriteBuffer &wbuf) = 0;
+  virtual ConnTransition Close() = 0;
 
   inline int GetSocketFd() { return sock_fd_; }
   inline std::shared_ptr<ReadBuffer> GetReadBuffer() { return in_; }
   inline std::shared_ptr<WriteQueue> GetWriteQueue() { return out_; }
-  Transition FlushAllWrites();
+  ConnTransition FlushAllWrites();
   inline bool ShouldFlush() { return out_->ShouldFlush(); }
   // TODO(Tianyu): Make these protected when protocol handler refactor is
   // complete
@@ -79,11 +79,11 @@ class PosixSocketIoWrapper : public NetworkIoWrapper {
 
 
   inline bool SslAble() const override { return false; }
-  Transition FillReadBuffer() override;
-  Transition FlushWriteBuffer(WriteBuffer &wbuf) override;
-  inline Transition Close() override {
+  ConnTransition FillReadBuffer() override;
+  ConnTransition FlushWriteBuffer(WriteBuffer &wbuf) override;
+  inline ConnTransition Close() override {
     peloton_close(sock_fd_);
-    return Transition::PROCEED;
+    return ConnTransition::PROCEED;
   }
 };
 
@@ -98,9 +98,9 @@ class SslSocketIoWrapper : public NetworkIoWrapper {
     : NetworkIoWrapper(std::move(other)), conn_ssl_context_(ssl) {}
 
   inline bool SslAble() const override { return true; }
-  Transition FillReadBuffer() override;
-  Transition FlushWriteBuffer(WriteBuffer &wbuf) override;
-  Transition Close() override;
+  ConnTransition FillReadBuffer() override;
+  ConnTransition FlushWriteBuffer(WriteBuffer &wbuf) override;
+  ConnTransition Close() override;
 
  private:
   friend class NetworkIoWrapperFactory;

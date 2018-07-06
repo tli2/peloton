@@ -20,7 +20,7 @@ namespace network {
 
 class ProtocolInterpreter {
  public:
-  virtual Transition Process(std::shared_ptr<ReadBuffer> in,
+  virtual ConnTransition Process(std::shared_ptr<ReadBuffer> in,
                              std::shared_ptr<WriteQueue> out,
                              CallbackFunc callback) = 0;
 

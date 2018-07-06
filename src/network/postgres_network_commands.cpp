@@ -168,7 +168,7 @@ std::vector<PostgresDataFormat> PostgresNetworkCommand::ReadResultFormats(size_t
   }
 }
 
-Transition SimpleQueryCommand::Exec(PostgresProtocolInterpreter &interpreter,
+ConnTransition SimpleQueryCommand::Exec(PostgresProtocolInterpreter &interpreter,
                                     PostgresPacketWriter &out,
                                     CallbackFunc callback) {
   interpreter.protocol_type_ = NetworkProtocolType::POSTGRES_PSQL;
@@ -183,13 +183,13 @@ Transition SimpleQueryCommand::Exec(PostgresProtocolInterpreter &interpreter,
     out.WriteErrorResponse({{NetworkMessageType::HUMAN_READABLE_ERROR,
                              e.what()}});
     out.WriteReadyForQuery(NetworkTransactionStateType::IDLE);
-    return Transition::PROCEED;
+    return ConnTransition::PROCEED;
   }
 
   if (sql_stmt_list == nullptr || sql_stmt_list->GetNumStatements() == 0) {
     out.WriteEmptyQueryResponse();
     out.WriteReadyForQuery(NetworkTransactionStateType::IDLE);
-    return Transition::PROCEED;
+    return ConnTransition::PROCEED;
   }
 
   // TODO(Yuchen): Hack. We only process the first statement in the packet now.
@@ -216,7 +216,7 @@ Transition SimpleQueryCommand::Exec(PostgresProtocolInterpreter &interpreter,
         out.WriteErrorResponse({{NetworkMessageType::HUMAN_READABLE_ERROR,
                                  state.error_message_}});
         out.WriteReadyForQuery(NetworkTransactionStateType::IDLE);
-        return Transition::PROCEED;
+        return ConnTransition::PROCEED;
       }
       state.statement_cache_.AddStatement(statement);
       interpreter.CompleteCommand(out, query_type, 0);
@@ -227,7 +227,7 @@ Transition SimpleQueryCommand::Exec(PostgresProtocolInterpreter &interpreter,
       // switched it to be NetworkTransactionStateType::IDLE. I don't know
       // we just don't always send back the internal txn state?
       out.WriteReadyForQuery(NetworkTransactionStateType::IDLE);
-      return Transition::PROCEED;
+      return ConnTransition::PROCEED;
     };
     case QueryType::QUERY_EXECUTE: {
       std::vector<type::Value> param_values;
@@ -244,7 +244,7 @@ Transition SimpleQueryCommand::Exec(PostgresProtocolInterpreter &interpreter,
         out.WriteErrorResponse({{NetworkMessageType::HUMAN_READABLE_ERROR,
                                  "The prepared statement does not exist"}});
         out.WriteReadyForQuery(NetworkTransactionStateType::IDLE);
-        return Transition::PROCEED;
+        return ConnTransition::PROCEED;
       }
       state.result_format_ =
           std::vector<PostgresDataFormat>(state.statement_->GetTupleDescriptor().size(),
@@ -256,19 +256,19 @@ Transition SimpleQueryCommand::Exec(PostgresProtocolInterpreter &interpreter,
         out.WriteErrorResponse({{NetworkMessageType::HUMAN_READABLE_ERROR,
                                  state.error_message_}});
         out.WriteReadyForQuery(NetworkTransactionStateType::IDLE);
-        return Transition::PROCEED;
+        return ConnTransition::PROCEED;
       }
 
       auto status = tcop::Tcop::GetInstance().ExecuteStatement(state, callback);
-      if (state.is_queuing_) return Transition::NEED_RESULT;
+      if (state.is_queuing_) return ConnTransition::NEED_RESULT;
       interpreter.ExecQueryMessageGetResult(out, status);
-      return Transition::PROCEED;
+      return ConnTransition::PROCEED;
     };
     case QueryType::QUERY_EXPLAIN: {
       auto status = interpreter.ExecQueryExplain(query,
                                                  dynamic_cast<parser::ExplainStatement &>(*sql_stmt));
       interpreter.ExecQueryMessageGetResult(out, status);
-      return Transition::PROCEED;
+      return ConnTransition::PROCEED;
     }
     default: {
       std::string stmt_name = "unnamed";
@@ -284,7 +284,7 @@ Transition SimpleQueryCommand::Exec(PostgresProtocolInterpreter &interpreter,
         out.WriteErrorResponse({{NetworkMessageType::HUMAN_READABLE_ERROR,
                                  state.error_message_}});
         out.WriteReadyForQuery(NetworkTransactionStateType::IDLE);
-        return Transition::PROCEED;
+        return ConnTransition::PROCEED;
       }
       state.param_values_ = std::vector<type::Value>();
       state.result_format_ =
@@ -293,14 +293,14 @@ Transition SimpleQueryCommand::Exec(PostgresProtocolInterpreter &interpreter,
       auto status =
           tcop::Tcop::GetInstance().ExecuteStatement(state, callback);
       if (state.is_queuing_)
-        return Transition::NEED_RESULT;
+        return ConnTransition::NEED_RESULT;
       interpreter.ExecQueryMessageGetResult(out, status);
-      return Transition::PROCEED;
+      return ConnTransition::PROCEED;
     }
   }
 }
 
-Transition ParseCommand::Exec(PostgresProtocolInterpreter &interpreter,
+ConnTransition ParseCommand::Exec(PostgresProtocolInterpreter &interpreter,
                               PostgresPacketWriter &out,
                               CallbackFunc) {
   tcop::ClientProcessState &state = interpreter.ClientProcessState();
@@ -317,7 +317,7 @@ Transition ParseCommand::Exec(PostgresProtocolInterpreter &interpreter,
     state.skipped_stmt_ = true;
     out.WriteErrorResponse({{NetworkMessageType::HUMAN_READABLE_ERROR,
                              e.what()}});
-    return Transition::PROCEED;
+    return ConnTransition::PROCEED;
   }
 
   // If the query is not supported yet,
@@ -336,7 +336,7 @@ Transition ParseCommand::Exec(PostgresProtocolInterpreter &interpreter,
     state.skipped_query_string_ = query;
     state.skipped_query_type_ = query_type;
     out.WriteSingleTypePacket(NetworkMessageType::PARSE_COMPLETE);
-    return Transition::PROCEED;
+    return ConnTransition::PROCEED;
   }
 
   auto statement = tcop::Tcop::GetInstance().PrepareStatement(state,
@@ -349,7 +349,7 @@ Transition ParseCommand::Exec(PostgresProtocolInterpreter &interpreter,
     state.skipped_stmt_ = true;
     out.WriteErrorResponse({{NetworkMessageType::HUMAN_READABLE_ERROR,
                              state.error_message_}});
-    return Transition::PROCEED;
+    return ConnTransition::PROCEED;
   }
 
   LOG_TRACE("PrepareStatement[%s] => %s", statement_name.c_str(),
@@ -361,10 +361,10 @@ Transition ParseCommand::Exec(PostgresProtocolInterpreter &interpreter,
   // Cache the statement
   state.statement_cache_.AddStatement(statement);
   out.WriteSingleTypePacket(NetworkMessageType::PARSE_COMPLETE);
-  return Transition::PROCEED;
+  return ConnTransition::PROCEED;
 }
 
-Transition BindCommand::Exec(PostgresProtocolInterpreter &interpreter,
+ConnTransition BindCommand::Exec(PostgresProtocolInterpreter &interpreter,
                              PostgresPacketWriter &out,
                              CallbackFunc) {
   tcop::ClientProcessState &state = interpreter.ClientProcessState();
@@ -372,7 +372,7 @@ Transition BindCommand::Exec(PostgresProtocolInterpreter &interpreter,
       statement_name = in_.ReadString();
   if (state.skipped_stmt_) {
     out.WriteSingleTypePacket(NetworkMessageType::BIND_COMPLETE);
-    return Transition::PROCEED;
+    return ConnTransition::PROCEED;
   }
   std::vector<PostgresDataFormat> formats = ReadParamFormats();
 
@@ -387,7 +387,7 @@ Transition BindCommand::Exec(PostgresProtocolInterpreter &interpreter,
     LOG_ERROR("%s", error_message.c_str());
     out.WriteErrorResponse({{NetworkMessageType::HUMAN_READABLE_ERROR,
                              error_message}});
-    return Transition::PROCEED;
+    return ConnTransition::PROCEED;
   }
 
   // Empty query
@@ -397,7 +397,7 @@ Transition BindCommand::Exec(PostgresProtocolInterpreter &interpreter,
     // as well as execute message
     state.skipped_stmt_ = true;
     state.skipped_query_string_ = "";
-    return Transition::PROCEED;
+    return ConnTransition::PROCEED;
   }
 
   const auto &query_string = statement->GetQueryString();
@@ -409,7 +409,7 @@ Transition BindCommand::Exec(PostgresProtocolInterpreter &interpreter,
     state.skipped_stmt_ = true;
     state.skipped_query_string_ = query_string;
     out.WriteSingleTypePacket(NetworkMessageType::BIND_COMPLETE);
-    return Transition::PROCEED;
+    return ConnTransition::PROCEED;
   }
 
   // Group the parameter types and the parameters in this vector
@@ -429,17 +429,17 @@ Transition BindCommand::Exec(PostgresProtocolInterpreter &interpreter,
   interpreter.portals_[portal_name] =
       std::make_shared<Portal>(portal_name, statement, std::move(param_values));
   out.WriteSingleTypePacket(NetworkMessageType::BIND_COMPLETE);
-  return Transition::PROCEED;
+  return ConnTransition::PROCEED;
 }
 
-Transition DescribeCommand::Exec(PostgresProtocolInterpreter &interpreter,
+ConnTransition DescribeCommand::Exec(PostgresProtocolInterpreter &interpreter,
                                  PostgresPacketWriter &out,
                                  CallbackFunc) {
   tcop::ClientProcessState &state = interpreter.ClientProcessState();
   if (state.skipped_stmt_) {
     // send 'no-data'
     out.WriteSingleTypePacket(NetworkMessageType::NO_DATA_RESPONSE);
-    return Transition::PROCEED;
+    return ConnTransition::PROCEED;
   }
 
   auto mode = in_.ReadValue<PostgresNetworkObjectType>();
@@ -467,10 +467,10 @@ Transition DescribeCommand::Exec(PostgresProtocolInterpreter &interpreter,
     default:
       throw NetworkProcessException("Unexpected Describe type");
   }
-  return Transition::PROCEED;
+  return ConnTransition::PROCEED;
 }
 
-Transition ExecuteCommand::Exec(PostgresProtocolInterpreter &interpreter,
+ConnTransition ExecuteCommand::Exec(PostgresProtocolInterpreter &interpreter,
                                 PostgresPacketWriter &out,
                                 CallbackFunc callback) {
   interpreter.protocol_type_ = NetworkProtocolType::POSTGRES_JDBC;
@@ -490,7 +490,7 @@ Transition ExecuteCommand::Exec(PostgresProtocolInterpreter &interpreter,
                                   state.skipped_query_type_,
                                   state.rows_affected_);
     state.skipped_stmt_ = false;
-    return Transition::PROCEED;
+    return ConnTransition::PROCEED;
   }
 
   auto portal_itr = interpreter.portals_.find(portal_name);
@@ -506,20 +506,20 @@ Transition ExecuteCommand::Exec(PostgresProtocolInterpreter &interpreter,
 
   state.param_values_ = portal->GetParameters();
   auto status = tcop::Tcop::GetInstance().ExecuteStatement(state, callback);
-  if (state.is_queuing_) return Transition::NEED_RESULT;
+  if (state.is_queuing_) return ConnTransition::NEED_RESULT;
   interpreter.ExecExecuteMessageGetResult(out, status);
-  return Transition::PROCEED;
+  return ConnTransition::PROCEED;
 }
 
-Transition SyncCommand::Exec(PostgresProtocolInterpreter &interpreter,
+ConnTransition SyncCommand::Exec(PostgresProtocolInterpreter &interpreter,
                              PostgresPacketWriter &out,
                              CallbackFunc) {
   tcop::ClientProcessState &state = interpreter.ClientProcessState();
   out.WriteReadyForQuery(state.txn_state_);
-  return Transition::PROCEED;
+  return ConnTransition::PROCEED;
 }
 
-Transition CloseCommand::Exec(PostgresProtocolInterpreter &interpreter,
+ConnTransition CloseCommand::Exec(PostgresProtocolInterpreter &interpreter,
                               PostgresPacketWriter &out,
                               CallbackFunc) {
   tcop::ClientProcessState &state = interpreter.ClientProcessState();
@@ -545,13 +545,13 @@ Transition CloseCommand::Exec(PostgresProtocolInterpreter &interpreter,
   }
   // Send close complete response
   out.WriteSingleTypePacket(NetworkMessageType::CLOSE_COMPLETE);
-  return Transition::PROCEED;
+  return ConnTransition::PROCEED;
 }
 
-Transition TerminateCommand::Exec(PostgresProtocolInterpreter &,
+ConnTransition TerminateCommand::Exec(PostgresProtocolInterpreter &,
                                   PostgresPacketWriter &,
                                   CallbackFunc) {
-  return Transition::TERMINATE;
+  return ConnTransition::TERMINATE;
 }
 } // namespace network
 } // namespace peloton

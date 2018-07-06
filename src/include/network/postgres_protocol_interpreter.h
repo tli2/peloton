@@ -28,7 +28,7 @@ class PostgresProtocolInterpreter : public ProtocolInterpreter {
     state_.thread_id_= thread_id;
   };
 
-  Transition Process(std::shared_ptr<ReadBuffer> in,
+  ConnTransition Process(std::shared_ptr<ReadBuffer> in,
                      std::shared_ptr<WriteQueue> out,
                      CallbackFunc callback) override;
 
@@ -50,7 +50,7 @@ class PostgresProtocolInterpreter : public ProtocolInterpreter {
     }
   }
 
-  Transition ProcessStartup(std::shared_ptr<ReadBuffer> in,
+  ConnTransition ProcessStartup(std::shared_ptr<ReadBuffer> in,
                            std::shared_ptr<WriteQueue> out);
 
   inline tcop::ClientProcessState &ClientProcessState() { return state_; }

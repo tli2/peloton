@@ -39,7 +39,7 @@ std::shared_ptr<NetworkIoWrapper> NetworkIoWrapperFactory::NewNetworkIoWrapper(
   return reused_wrapper;
 }
 
-Transition NetworkIoWrapperFactory::TryUseSsl(
+ConnTransition NetworkIoWrapperFactory::TryUseSsl(
     std::shared_ptr<NetworkIoWrapper> &io_wrapper) {
   SSL *context;
   if (!io_wrapper->SslAble()) {
@@ -62,14 +62,14 @@ Transition NetworkIoWrapperFactory::TryUseSsl(
   // Yuchen: "Post-connection verification?"
   ERR_clear_error();
   int ssl_accept_ret = SSL_accept(context);
-  if (ssl_accept_ret > 0) return Transition::PROCEED;
+  if (ssl_accept_ret > 0) return ConnTransition::PROCEED;
 
   int err = SSL_get_error(context, ssl_accept_ret);
   switch (err) {
     case SSL_ERROR_WANT_READ:
-      return Transition::NEED_READ;
+      return ConnTransition::NEED_READ;
     case SSL_ERROR_WANT_WRITE:
-      return Transition::NEED_WRITE;
+      return ConnTransition::NEED_WRITE;
     default:
       throw NetworkProcessException("SSL Error, error code" + std::to_string(err));
   }

@@ -22,10 +22,10 @@
 
 namespace peloton {
 namespace network {
-Transition PostgresProtocolInterpreter::Process(std::shared_ptr<ReadBuffer> in,
+ConnTransition PostgresProtocolInterpreter::Process(std::shared_ptr<ReadBuffer> in,
                                                 std::shared_ptr<WriteQueue> out,
                                                 CallbackFunc callback) {
-  if (!TryBuildPacket(in)) return Transition::NEED_READ;
+  if (!TryBuildPacket(in)) return ConnTransition::NEED_READ;
   if (startup_) {
     // Always flush startup packet response
     out->ForceFlush();
@@ -39,7 +39,7 @@ Transition PostgresProtocolInterpreter::Process(std::shared_ptr<ReadBuffer> in,
   return command->Exec(*this, writer, callback);
 }
 
-Transition PostgresProtocolInterpreter::ProcessStartup(std::shared_ptr<ReadBuffer> in,
+ConnTransition PostgresProtocolInterpreter::ProcessStartup(std::shared_ptr<ReadBuffer> in,
                                                        std::shared_ptr<WriteQueue> out) {
   PostgresPacketWriter writer(*out);
   auto proto_version = in->ReadValue<uint32_t>();
@@ -49,10 +49,10 @@ Transition PostgresProtocolInterpreter::ProcessStartup(std::shared_ptr<ReadBuffe
     // TODO(Tianyu): Should this be moved from PelotonServer into settings?
     if (PelotonServer::GetSSLLevel() == SSLLevel::SSL_DISABLE) {
       writer.WriteSingleTypePacket(NetworkMessageType::SSL_NO);
-      return Transition::PROCEED;
+      return ConnTransition::PROCEED;
     }
     writer.WriteSingleTypePacket(NetworkMessageType::SSL_YES);
-    return Transition::NEED_SSL_HANDSHAKE;
+    return ConnTransition::NEED_SSL_HANDSHAKE;
   }
 
   // Process startup packet
@@ -60,7 +60,7 @@ Transition PostgresProtocolInterpreter::ProcessStartup(std::shared_ptr<ReadBuffe
     LOG_ERROR("Protocol error: only protocol version 3 is supported");
     writer.WriteErrorResponse({{NetworkMessageType::HUMAN_READABLE_ERROR,
                              "Protocol Version Not Supported"}});
-    return Transition::TERMINATE;
+    return ConnTransition::TERMINATE;
   }
 
   // The last bit of the packet will be nul. This is not a valid field. When there
@@ -78,7 +78,7 @@ Transition PostgresProtocolInterpreter::ProcessStartup(std::shared_ptr<ReadBuffe
   // TODO(Tianyu): Implement authentication. For now we always send AuthOK
   writer.WriteStartupResponse();
   startup_ = false;
-  return Transition::PROCEED;
+  return ConnTransition::PROCEED;
 }
 
 bool PostgresProtocolInterpreter::TryBuildPacket(std::shared_ptr<ReadBuffer> &in) {

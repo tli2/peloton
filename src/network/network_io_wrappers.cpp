@@ -19,13 +19,13 @@
 
 namespace peloton {
 namespace network {
-Transition NetworkIoWrapper::FlushAllWrites() {
+ConnTransition NetworkIoWrapper::FlushAllWrites() {
   for (; out_->FlushHead() != nullptr; out_->MarkHeadFlushed()) {
     auto result = FlushWriteBuffer(*out_->FlushHead());
-    if (result != Transition::PROCEED) return result;
+    if (result != ConnTransition::PROCEED) return result;
   }
   out_->Reset();
-  return Transition::PROCEED;
+  return ConnTransition::PROCEED;
 }
 
 PosixSocketIoWrapper::PosixSocketIoWrapper(int sock_fd,
@@ -44,17 +44,17 @@ PosixSocketIoWrapper::PosixSocketIoWrapper(int sock_fd,
   setsockopt(sock_fd_, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 }
 
-Transition PosixSocketIoWrapper::FillReadBuffer() {
+ConnTransition PosixSocketIoWrapper::FillReadBuffer() {
   if (!in_->HasMore()) in_->Reset();
   if (in_->HasMore() && in_->Full()) in_->MoveContentToHead();
-  Transition result = Transition::NEED_READ;
+  ConnTransition result = ConnTransition::NEED_READ;
   // Normal mode
   while (!in_->Full()) {
     auto bytes_read = in_->FillBufferFrom(sock_fd_);
     if (bytes_read > 0)
-      result = Transition::PROCEED;
+      result = ConnTransition::PROCEED;
     else if (bytes_read == 0)
-      return Transition::TERMINATE;
+      return ConnTransition::TERMINATE;
     else
       switch (errno) {
         case EAGAIN:
@@ -69,35 +69,35 @@ Transition PosixSocketIoWrapper::FillReadBuffer() {
   return result;
 }
 
-Transition PosixSocketIoWrapper::FlushWriteBuffer(WriteBuffer &wbuf) {
+ConnTransition PosixSocketIoWrapper::FlushWriteBuffer(WriteBuffer &wbuf) {
   while (wbuf.HasMore()) {
     auto bytes_written = wbuf.WriteOutTo(sock_fd_);
     if (bytes_written < 0)
       switch (errno) {
         case EINTR:continue;
-        case EAGAIN:return Transition::NEED_WRITE;
+        case EAGAIN:return ConnTransition::NEED_WRITE;
         default:LOG_ERROR("Error writing: %s", strerror(errno));
           throw NetworkProcessException("Fatal error during write");
       }
   }
   wbuf.Reset();
-  return Transition::PROCEED;
+  return ConnTransition::PROCEED;
 }
 
-Transition SslSocketIoWrapper::FillReadBuffer() {
+ConnTransition SslSocketIoWrapper::FillReadBuffer() {
   if (!in_->HasMore()) in_->Reset();
   if (in_->HasMore() && in_->Full()) in_->MoveContentToHead();
-  Transition result = Transition::NEED_READ;
+  ConnTransition result = ConnTransition::NEED_READ;
   while (!in_->Full()) {
     auto ret = in_->FillBufferFrom(conn_ssl_context_);
     switch (ret) {
-      case SSL_ERROR_NONE:result = Transition::PROCEED;
+      case SSL_ERROR_NONE:result = ConnTransition::PROCEED;
         break;
-      case SSL_ERROR_ZERO_RETURN: return Transition::TERMINATE;
+      case SSL_ERROR_ZERO_RETURN: return ConnTransition::TERMINATE;
         // The SSL packet is partially loaded to the SSL buffer only,
         // More data is required in order to decode the wh`ole packet.
       case SSL_ERROR_WANT_READ: return result;
-      case SSL_ERROR_WANT_WRITE: return Transition::NEED_WRITE;
+      case SSL_ERROR_WANT_WRITE: return ConnTransition::NEED_WRITE;
       case SSL_ERROR_SYSCALL:
         if (errno == EINTR) {
           LOG_INFO("Error SSL Reading: EINTR");
@@ -111,13 +111,13 @@ Transition SslSocketIoWrapper::FillReadBuffer() {
   return result;
 }
 
-Transition SslSocketIoWrapper::FlushWriteBuffer(WriteBuffer &wbuf) {
+ConnTransition SslSocketIoWrapper::FlushWriteBuffer(WriteBuffer &wbuf) {
   while (wbuf.HasMore()) {
     auto ret = wbuf.WriteOutTo(conn_ssl_context_);
     switch (ret) {
       case SSL_ERROR_NONE: break;
-      case SSL_ERROR_WANT_WRITE: return Transition::NEED_WRITE;
-      case SSL_ERROR_WANT_READ: return Transition::NEED_READ;
+      case SSL_ERROR_WANT_WRITE: return ConnTransition::NEED_WRITE;
+      case SSL_ERROR_WANT_READ: return ConnTransition::NEED_READ;
       case SSL_ERROR_SYSCALL:
         // If interrupted, try again.
         if (errno == EINTR) {
@@ -132,18 +132,18 @@ Transition SslSocketIoWrapper::FlushWriteBuffer(WriteBuffer &wbuf) {
     }
   }
   wbuf.Reset();
-  return Transition::PROCEED;
+  return ConnTransition::PROCEED;
 }
 
-Transition SslSocketIoWrapper::Close() {
+ConnTransition SslSocketIoWrapper::Close() {
   ERR_clear_error();
   int ret = SSL_shutdown(conn_ssl_context_);
   if (ret != 0) {
     int err = SSL_get_error(conn_ssl_context_, ret);
     switch (err) {
       // More work to do before shutdown
-      case SSL_ERROR_WANT_READ: return Transition::NEED_READ;
-      case SSL_ERROR_WANT_WRITE: return Transition::NEED_WRITE;
+      case SSL_ERROR_WANT_READ: return ConnTransition::NEED_READ;
+      case SSL_ERROR_WANT_WRITE: return ConnTransition::NEED_WRITE;
       default: LOG_ERROR("Error shutting down ssl session, err: %d", err);
     }
   }
@@ -154,7 +154,7 @@ Transition SslSocketIoWrapper::Close() {
   SSL_free(conn_ssl_context_);
   conn_ssl_context_ = nullptr;
   peloton_close(sock_fd_);
-  return Transition::PROCEED;
+  return ConnTransition::PROCEED;
 }
 
 }  // namespace network

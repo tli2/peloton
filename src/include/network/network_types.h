@@ -31,7 +31,7 @@ enum class ConnState {
  * ConnectionHandle::StateMachine
  * @see ConnectionHandle::StateMachine
  */
-enum class Transition {
+enum class ConnTransition {
   NONE,
   WAKEUP,
   PROCEED,

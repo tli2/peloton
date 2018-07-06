@@ -24,7 +24,7 @@ class name : public PostgresNetworkCommand {                               \
  public:                                                                   \
   explicit name(PostgresInputPacket &in)                                   \
      : PostgresNetworkCommand(in, flush) {}                                \
-  virtual Transition Exec(PostgresProtocolInterpreter &,                   \
+  virtual ConnTransition Exec(PostgresProtocolInterpreter &,                   \
                           PostgresPacketWriter &,                          \
                           CallbackFunc) override;                          \
 }
@@ -36,7 +36,7 @@ class PostgresProtocolInterpreter;
 
 class PostgresNetworkCommand {
  public:
-  virtual Transition Exec(PostgresProtocolInterpreter &interpreter,
+  virtual ConnTransition Exec(PostgresProtocolInterpreter &interpreter,
                           PostgresPacketWriter &out,
                           CallbackFunc callback) = 0;
 

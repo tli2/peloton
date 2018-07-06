@@ -44,27 +44,26 @@ namespace network {
  *            END_STATE_DEF
  *
  *  transition ::=
- *  ON (Transition) SET_STATE_TO (ConnState) AND_INVOKE (ConnectionHandle
+ *  ON (ConnTransition) SET_STATE_TO (ConnState) AND_INVOKE (ConnectionHandle
  * method)
  *
- *  Note that all the symbols used must be defined in ConnState, Transition and
+ *  Note that all the symbols used must be defined in ConnState, ConnTransition and
  *  ClientSocketWrapper, respectively.
  *
  */
-namespace {
 // Underneath the hood these macro is defining the static method
 // ConnectionHandle::StateMachine::Delta.
 // Together they compose a nested switch statement. Running the function on any
 // undefined state or transition on said state will throw a runtime error.
 #define DEF_TRANSITION_GRAPH                                          \
-  ConnectionHandle::StateMachine::transition_result                   \
-  ConnectionHandle::StateMachine::Delta_(ConnState c, Transition t) { \
+  ConnectionHandle::ConnStateMachine::transition_result                   \
+  ConnectionHandle::ConnStateMachine::Delta_(ConnState c, ConnTransition t) { \
     switch (c) {
 #define DEFINE_STATE(s) \
   case ConnState::s: {  \
     switch (t) {
 #define ON(t)         \
-  case Transition::t: \
+  case ConnTransition::t: \
     return
 #define SET_STATE_TO(s) \
   {                     \
@@ -76,21 +75,21 @@ namespace {
 #define AND_WAIT_ON_READ                      \
   ([](ConnectionHandle &w) {                  \
     w.UpdateEventFlags(EV_READ | EV_PERSIST); \
-    return Transition::NONE;                  \
+    return ConnTransition::NONE;                  \
   })                                          \
   }                                           \
   ;
 #define AND_WAIT_ON_WRITE                      \
   ([](ConnectionHandle &w) {                   \
     w.UpdateEventFlags(EV_WRITE | EV_PERSIST); \
-    return Transition::NONE;                   \
+    return ConnTransition::NONE;                   \
   })                                           \
   }                                            \
   ;
 #define AND_WAIT_ON_PELOTON        \
   ([](ConnectionHandle &w) {       \
     w.StopReceivingNetworkEvent(); \
-    return Transition::NONE;       \
+    return ConnTransition::NONE;       \
   })                               \
   }                                \
   ;
@@ -102,7 +101,6 @@ namespace {
 
 #define END_STATE_DEF \
   ON(TERMINATE) SET_STATE_TO(CLOSING) AND_INVOKE(TryCloseConnection) END_DEF
-}  // namespace
 
 // clang-format off
 DEF_TRANSITION_GRAPH
@@ -149,20 +147,6 @@ DEF_TRANSITION_GRAPH
 END_DEF
 // clang-format on
 
-void ConnectionHandle::StateMachine::Accept(Transition action,
-                                            ConnectionHandle &connection) {
-  Transition next = action;
-  while (next != Transition::NONE) {
-    transition_result result = Delta_(current_state_, next);
-    current_state_ = result.first;
-    try {
-      next = result.second(connection);
-    } catch (NetworkProcessException &e) {
-      LOG_ERROR("%s\n", e.what());
-      next = Transition::TERMINATE;
-    }
-  }
-}
 
 // TODO(Tianyu): Maybe use a factory to initialize protocol_interpreter here
 ConnectionHandle::ConnectionHandle(int sock_fd, ConnectionHandlerTask *handler)
@@ -170,25 +154,25 @@ ConnectionHandle::ConnectionHandle(int sock_fd, ConnectionHandlerTask *handler)
       io_wrapper_(NetworkIoWrapperFactory::GetInstance().NewNetworkIoWrapper(sock_fd)),
       protocol_interpreter_{new PostgresProtocolInterpreter(conn_handler_->Id())} {}
 
-Transition ConnectionHandle::GetResult() {
+ConnTransition ConnectionHandle::GetResult() {
   EventUtil::EventAdd(network_event_, nullptr);
   protocol_interpreter_->GetResult(io_wrapper_->GetWriteQueue());
-  return Transition::PROCEED;
+  return ConnTransition::PROCEED;
 }
 
-Transition ConnectionHandle::TrySslHandshake() {
+ConnTransition ConnectionHandle::TrySslHandshake() {
   // TODO(Tianyu): Do we really need to flush here?
   auto ret = io_wrapper_->FlushAllWrites();
-  if (ret != Transition::PROCEED) return ret;
+  if (ret != ConnTransition::PROCEED) return ret;
   return NetworkIoWrapperFactory::GetInstance().TryUseSsl(
       io_wrapper_);
 }
 
-Transition ConnectionHandle::TryCloseConnection() {
+ConnTransition ConnectionHandle::TryCloseConnection() {
   LOG_DEBUG("Attempt to close the connection %d", io_wrapper_->GetSocketFd());
   // TODO(Tianyu): Handle close failure
-  Transition close = io_wrapper_->Close();
-  if (close != Transition::PROCEED) return close;
+  ConnTransition close = io_wrapper_->Close();
+  if (close != ConnTransition::PROCEED) return close;
   // Remove listening event
   // Only after the connection is closed is it safe to remove events,
   // after this point no object in the system has reference to this
@@ -199,7 +183,7 @@ Transition ConnectionHandle::TryCloseConnection() {
   // not accept shared_ptrs.) and thus as we shut down we need to manually
   // deallocate this object.
   delete this;
-  return Transition::NONE;
+  return ConnTransition::NONE;
 }
 }  // namespace network
 }  // namespace peloton
