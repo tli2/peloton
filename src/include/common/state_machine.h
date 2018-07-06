@@ -70,6 +70,8 @@ class StateMachine {
     }
   }
 
+  State GetState() {return current_state_;}
+
  protected:
   /**
    * Current state of the state machine
