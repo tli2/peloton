@@ -2,7 +2,7 @@
 //
 //                         Peloton
 //
-// t=cop.h
+// tcop.h
 //
 // Identification: src/include/traffic_cop/tcop.h
 //
