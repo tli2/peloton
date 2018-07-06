@@ -19,6 +19,9 @@
 #include "parser/sql_statement.h"
 #include "common/statement_cache.h"
 #include "optimizer/optimizer.h"
+#include "client_transaction_handle.h"
+
+
 namespace peloton {
 namespace tcop {
 
@@ -38,11 +41,12 @@ struct ClientProcessState {
   // The optimizer used for this connection
   std::unique_ptr<optimizer::AbstractOptimizer> optimizer_{new optimizer::Optimizer()};
   // flag of single statement txn
-  bool single_statement_txn_ = true;
   std::vector<PostgresDataFormat> result_format_;
   // flag of single statement txn
   std::vector<ResultValue> result_;
-  std::stack<TcopTxnState> tcop_txn_state_;
+  
+  ClientTxnHandle txn_handle_;
+  
   NetworkTransactionStateType txn_state_ = NetworkTransactionStateType::IDLE;
   bool skipped_stmt_ = false;
   std::string skipped_query_string_;
@@ -51,15 +55,6 @@ struct ClientProcessState {
   int rows_affected_ = 0;
   executor::ExecutionResult p_status_;
 
-  // TODO(Tianyu): This is vile, get rid of this
-  TcopTxnState &GetCurrentTxnState() {
-    if (tcop_txn_state_.empty()) {
-      static TcopTxnState
-          default_state = std::make_pair(nullptr, ResultType::INVALID);
-      return default_state;
-    }
-    return tcop_txn_state_.top();
-  }
 
   // TODO(Tianyu): This is also vile, get rid of this. This is only used for testing
   void Reset() {
@@ -70,10 +65,8 @@ struct ClientProcessState {
     param_values_.clear();
     statement_.reset();
     optimizer_->Reset();
-    single_statement_txn_ = false;
     result_format_.clear();
     result_.clear();
-    tcop_txn_state_ = std::stack<TcopTxnState>();
     txn_state_ = NetworkTransactionStateType::IDLE;
     skipped_stmt_ = false;
     skipped_query_string_ = "";

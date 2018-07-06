@@ -44,47 +44,17 @@ std::shared_ptr<Statement> Tcop::PrepareStatement(ClientProcessState &state,
                                                query_string,
                                                std::move(sql_stmt_list));
 
-  // TODO(Tianyu): Issue #1441. Hopefully Tianyi will fix this in his later
-  // refactor
-
-  // We can learn transaction's states, BEGIN, COMMIT, ABORT, or ROLLBACK from
-  // member variables, tcop_txn_state_. We can also get single-statement txn or
-  // multi-statement txn from member variable single_statement_txn_
-  auto &txn_manager = concurrency::TransactionManagerFactory::GetInstance();
-  // --multi-statements except BEGIN in a transaction
-  if (!state.tcop_txn_state_.empty()) {
-    state.single_statement_txn_ = false;
-    // multi-statment txn has been aborted, just skip this query,
-    // and do not need to parse or execute this query anymore.
-    // Do not return nullptr in case that 'COMMIT' cannot be execute,
-    // because nullptr will directly return ResultType::FAILURE to
-    // packet_manager
-    if (state.tcop_txn_state_.top().second == ResultType::ABORTED)
-      return statement;
-  } else {
-    // Begin new transaction when received single-statement query or "BEGIN"
-    // from multi-statement query
-    if (statement->GetQueryType() ==
-        QueryType::QUERY_BEGIN) {  // only begin a new transaction
-      // note this transaction is not single-statement transaction
-      LOG_TRACE("BEGIN");
-      state.single_statement_txn_ = false;
-    } else {
-      // single statement
-      LOG_TRACE("SINGLE TXN");
-      state.single_statement_txn_ = true;
-    }
-    auto txn = txn_manager.BeginTransaction(state.thread_id_);
-    // this shouldn't happen
-    if (txn == nullptr) {
-      LOG_TRACE("Begin txn failed");
-    }
-    // initialize the current result as success
-    state.tcop_txn_state_.emplace(txn, ResultType::SUCCESS);
+  // for general queries, we need to check if the current txn is going to
+  // be aborted
+  if (query_type != QueryType::QUERY_ROLLBACK && state.txn_handle_.ToAbort()) {
+    state.error_message_ = "Current transaction is going to be aborted.";
+    return nullptr;
   }
 
+  auto txn = state.txn_handle_.ImplicitStart();
+
   if (settings::SettingsManager::GetBool(settings::SettingId::brain)) {
-    state.tcop_txn_state_.top().first->AddQueryString(query_string.c_str());
+    state.txn_handle_.GetTxn()->AddQueryString(query_string.c_str());
   }
 
   // TODO(Tianyi) Move Statement Planing into Statement's method
@@ -92,11 +62,11 @@ std::shared_ptr<Statement> Tcop::PrepareStatement(ClientProcessState &state,
   try {
     // Run binder
     auto bind_node_visitor = binder::BindNodeVisitor(
-        state.tcop_txn_state_.top().first, state.db_name_);
+        txn, state.db_name_);
     bind_node_visitor.BindNameToNode(
         statement->GetStmtParseTreeList()->GetStatement(0));
     auto plan = state.optimizer_->BuildPelotonPlanTree(
-        statement->GetStmtParseTreeList(), state.tcop_txn_state_.top().first);
+        statement->GetStmtParseTreeList(), txn);
     statement->SetPlanTree(plan);
     // Get the tables that our plan references so that we know how to
     // invalidate it at a later point when the catalog changes
@@ -111,6 +81,7 @@ std::shared_ptr<Statement> Tcop::PrepareStatement(ClientProcessState &state,
       LOG_TRACE("select query, finish setting");
     }
   } catch (Exception &e) {
+    state.txn_handle_.SoftAbort();
     state.error_message_ = e.what();
     tcop::Tcop::GetInstance().ProcessInvalidStatement(state);
     return nullptr;
@@ -145,18 +116,22 @@ ResultType Tcop::ExecuteStatement(ClientProcessState &state,
       case QueryType::QUERY_COMMIT:return CommitQueryHelper(state);
       case QueryType::QUERY_ROLLBACK:return AbortQueryHelper(state);
       default:
+        if (state.txn_handle_.ToAbort()) {
+          state.error_message_ = "Current transaction is going to be aborted.";
+          return ResultType::TO_ABORT;
+        }
         // The statement may be out of date
         // It needs to be replan
+        auto txn = state.txn_handle_.ImplicitStart();
         if (state.statement_->GetNeedsReplan()) {
           // TODO(Tianyi) Move Statement Replan into Statement's method
           // to increase coherence
           auto bind_node_visitor = binder::BindNodeVisitor(
-              state.tcop_txn_state_.top().first, state.db_name_);
+              txn, state.db_name_);
           bind_node_visitor.BindNameToNode(
               state.statement_->GetStmtParseTreeList()->GetStatement(0));
           auto plan = state.optimizer_->BuildPelotonPlanTree(
-              state.statement_->GetStmtParseTreeList(),
-              state.tcop_txn_state_.top().first);
+              state.statement_->GetStmtParseTreeList(), txn);
           state.statement_->SetPlanTree(plan);
           state.statement_->SetNeedsReplan(true);
         }
@@ -175,26 +150,22 @@ ResultType Tcop::ExecuteStatement(ClientProcessState &state,
 
 bool Tcop::BindParamsForCachePlan(ClientProcessState &state,
                                   const std::vector<std::unique_ptr<expression::AbstractExpression>> &exprs) {
-  if (state.tcop_txn_state_.empty()) {
-    state.single_statement_txn_ = true;
-    auto &txn_manager = concurrency::TransactionManagerFactory::GetInstance();
-    auto txn = txn_manager.BeginTransaction(state.thread_id_);
-    // this shouldn't happen
-    if (txn == nullptr) {
-      LOG_ERROR("Begin txn failed");
-    }
-    // initialize the current result as success
-    state.tcop_txn_state_.emplace(txn, ResultType::SUCCESS);
+  if (state.txn_handle_.ToAbort()) {
+    state.error_message_ = "Current transaction is going to be aborted.";
+    return nullptr;
   }
+
+  auto txn = state.txn_handle_.ImplicitStart();
+
   // Run binder
   auto bind_node_visitor =
-      binder::BindNodeVisitor(state.tcop_txn_state_.top().first,
-                              state.db_name_);
+      binder::BindNodeVisitor(txn, state.db_name_);
 
   std::vector<type::Value> param_values;
   for (const auto &expr :exprs) {
     if (!expression::ExpressionUtil::IsValidStaticExpression(expr.get())) {
       state.error_message_ = "Invalid Expression Type";
+      state.txn_handle_.SoftAbort();
       return false;
     }
     expr->Accept(&bind_node_visitor);
@@ -334,7 +305,7 @@ void Tcop::GetTableColumns(ClientProcessState &state,
     if (from_table->join == nullptr) {
       auto columns =
           catalog::Catalog::GetInstance()->GetTableWithName(
-              state.GetCurrentTxnState().first,
+              state.txn_handle_.GetTxn(),
               from_table->GetDatabaseName(),
               from_table->GetSchemaName(),
               from_table->GetTableName())
@@ -354,30 +325,12 @@ void Tcop::GetTableColumns(ClientProcessState &state,
 }
 
 void Tcop::ExecuteStatementPlanGetResult(ClientProcessState &state) {
-  if (state.p_status_.m_result == ResultType::FAILURE) return;
-
-  auto txn_result = state.GetCurrentTxnState().first->GetResult();
-  if (state.single_statement_txn_ || txn_result == ResultType::FAILURE) {
-    LOG_TRACE("About to commit/abort: single stmt: %d,txn_result: %s",
-              state.single_statement_txn_,
-              ResultTypeToString(txn_result).c_str());
-    switch (txn_result) {
-      case ResultType::SUCCESS:
-        // Commit single statement
-        LOG_TRACE("Commit Transaction");
-        state.p_status_.m_result = CommitQueryHelper(state);
-        break;
-      case ResultType::FAILURE:
-      default:
-        // Abort
-        LOG_TRACE("Abort Transaction");
-        if (state.single_statement_txn_) {
-          LOG_TRACE("Tcop_txn_state size: %lu", state.tcop_txn_state_.size());
-          state.p_status_.m_result = AbortQueryHelper(state);
-        } else {
-          state.tcop_txn_state_.top().second = ResultType::ABORTED;
-          state.p_status_.m_result = ResultType::ABORTED;
-        }
+  if (state.p_status_.m_result == ResultType::FAILURE) {
+    state.txn_handle_.SoftAbort();
+    return;
+  } else {  // execution SUCCESS
+    if (!state.txn_handle_.ImplicitEnd()) {
+      state.p_status_.m_result = ResultType::ABORTED;
     }
   }
 }
@@ -392,97 +345,44 @@ ResultType Tcop::ExecuteStatementGetResult(ClientProcessState &state) {
 }
 
 void Tcop::ProcessInvalidStatement(ClientProcessState &state) {
-  if (state.single_statement_txn_) {
-    LOG_TRACE("SINGLE ABORT!");
-    AbortQueryHelper(state);
-  } else {  // multi-statment txn
-    if (state.tcop_txn_state_.top().second != ResultType::ABORTED) {
-      state.tcop_txn_state_.top().second = ResultType::ABORTED;
-    }
-  }
+  state.txn_handle_.SoftAbort();
 }
 
 ResultType Tcop::CommitQueryHelper(ClientProcessState &state) {
-// do nothing if we have no active txns
-  if (state.tcop_txn_state_.empty()) return ResultType::NOOP;
-  auto &curr_state = state.tcop_txn_state_.top();
-  state.tcop_txn_state_.pop();
-  auto txn = curr_state.first;
-  auto &txn_manager = concurrency::TransactionManagerFactory::GetInstance();
-  // I catch the exception (ex. table not found) explicitly,
-  // If this exception is caused by a query in a transaction,
-  // I will block following queries in that transaction until 'COMMIT' or
-  // 'ROLLBACK' After receive 'COMMIT', see if it is rollback or really commit.
-  if (curr_state.second != ResultType::ABORTED) {
-    // txn committed
-    return txn_manager.CommitTransaction(txn);
+  if (state.txn_handle_.CanCommit()) {
+    bool success = state.txn_handle_.ExplicitCommit();
+    if (success)  return ResultType::SUCCESS;
+    else  return ResultType::FAILURE;
   } else {
-    // otherwise, rollback
-    return txn_manager.AbortTransaction(txn);
+    // TODO think of a better error message
+    state.error_message_ = "Cannot commit";
+    return ResultType::NOOP;
   }
 }
 
 ResultType Tcop::BeginQueryHelper(ClientProcessState &state) {
-  if (state.tcop_txn_state_.empty()) {
-    auto &txn_manager = concurrency::TransactionManagerFactory::GetInstance();
-    auto txn = txn_manager.BeginTransaction(state.thread_id_);
-    // this shouldn't happen
-    if (txn == nullptr) {
-      LOG_DEBUG("Begin txn failed");
-      return ResultType::FAILURE;
-    }
-    // initialize the current result as success
-    state.tcop_txn_state_.emplace(txn, ResultType::SUCCESS);
+  if (state.txn_handle_.CanBegin()) {
+    state.txn_handle_.ExplicitStart(state.thread_id_);
+    return ResultType::SUCCESS;
+  } else {
+    return ResultType::FAILURE;
   }
-  return ResultType::SUCCESS;
 }
 
 ResultType Tcop::AbortQueryHelper(ClientProcessState &state) {
-  // do nothing if we have no active txns
-  if (state.tcop_txn_state_.empty()) return ResultType::NOOP;
-  auto &curr_state = state.tcop_txn_state_.top();
-  state.tcop_txn_state_.pop();
-  // explicitly abort the txn only if it has not aborted already
-  if (curr_state.second != ResultType::ABORTED) {
-    auto txn = curr_state.first;
-    auto &txn_manager = concurrency::TransactionManagerFactory::GetInstance();
-    auto result = txn_manager.AbortTransaction(txn);
-    return result;
-  } else {
-    delete curr_state.first;
-    // otherwise, the txn has already been aborted
+  if (state.txn_handle_.CanAbort()) {
+    state.txn_handle_.ExplicitAbort();
     return ResultType::ABORTED;
+  } else {
+    // TODO Think of a way to pass the error message
+    state.error_message_ = "Cannot abort when there is no txn";
+    return ResultType::NOOP;
   }
 }
 
 executor::ExecutionResult Tcop::ExecuteHelper(ClientProcessState &state,
                                               CallbackFunc callback) {
-  auto &curr_state = state.GetCurrentTxnState();
-
-  concurrency::TransactionContext *txn;
-  if (!state.tcop_txn_state_.empty()) {
-    txn = curr_state.first;
-  } else {
-    // No active txn, single-statement txn
-    auto &txn_manager = concurrency::TransactionManagerFactory::GetInstance();
-    // new txn, reset result status
-    curr_state.second = ResultType::SUCCESS;
-    state.single_statement_txn_ = true;
-    txn = txn_manager.BeginTransaction(state.thread_id_);
-    state.tcop_txn_state_.emplace(txn, ResultType::SUCCESS);
-  }
-
-  // skip if already aborted
-  if (curr_state.second == ResultType::ABORTED) {
-    // If the transaction state is ABORTED, the transaction should be aborted
-    // but Peloton didn't explicitly abort it yet since it didn't receive a
-    // COMMIT/ROLLBACK.
-    // Here, it receive queries other than COMMIT/ROLLBACK in an broken
-    // transaction,
-    // it should tell the client that these queries will not be executed.
-    state.p_status_.m_result = ResultType::TO_ABORT;
-    return state.p_status_;
-  }
+  auto txn = state.txn_handle_.GetTxn();
 
   auto on_complete = [callback, &state](executor::ExecutionResult p_status,
                          std::vector<ResultValue> &&values) {

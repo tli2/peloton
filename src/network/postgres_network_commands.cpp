@@ -252,7 +252,6 @@ ConnTransition SimpleQueryCommand::Exec(PostgresProtocolInterpreter &interpreter
 
       if (!tcop::Tcop::GetInstance().BindParamsForCachePlan(state,
                                                             exec_stmt->parameters)) {
-        tcop::Tcop::GetInstance().ProcessInvalidStatement(state);
         out.WriteErrorResponse({{NetworkMessageType::HUMAN_READABLE_ERROR,
                                  state.error_message_}});
         out.WriteReadyForQuery(NetworkTransactionStateType::IDLE);
@@ -345,7 +344,6 @@ ConnTransition ParseCommand::Exec(PostgresProtocolInterpreter &interpreter,
                                                               std::move(
                                                                   sql_stmt_list));
   if (statement == nullptr) {
-    tcop::Tcop::GetInstance().ProcessInvalidStatement(state);
     state.skipped_stmt_ = true;
     out.WriteErrorResponse({{NetworkMessageType::HUMAN_READABLE_ERROR,
                              state.error_message_}});

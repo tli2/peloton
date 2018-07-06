@@ -30,8 +30,9 @@ class ClientTxnHandle {
     return this->curr_txn_;
   }
 
-  inline void ImplicitEnd() {
+  inline bool ImplicitEnd() {
     state_machine_.Accept(TxnEvent::IMP_END, *this);
+    return txn_commited_;
   }
 
   inline TxnContext *ExplicitStart(const size_t thread_id = 0) {
@@ -53,13 +54,26 @@ class ClientTxnHandle {
     state_machine_.Accept(TxnEvent::SOFT_ABORT, *this);
   }
 
-  inline bool NotInTxnBlock() {
+  inline bool ToAbort() {
+    return (state_machine_.GetState() == ClientTxnState::TO_ABORT);
+  }
+
+  inline bool CanCommit() {
+    return (state_machine_.GetState() == ClientTxnState::EXP_STARTED);
+  }
+
+  inline bool CanBegin() {
     return (state_machine_.GetState() == ClientTxnState::IDLE ||
             state_machine_.GetState() == ClientTxnState::IMP_STARTED);
   }
 
-  inline bool ToAbort() {
-    return (state_machine_.GetState() == ClientTxnState::TO_ABORT);
+  inline bool CanAbort() {
+    return (state_machine_.GetState() == ClientTxnState::TO_ABORT ||
+            state_machine_.GetState() == ClientTxnState::EXP_STARTED);
+  }
+
+  inline TxnContext *GetTxn() {
+    return this->curr_txn_;
   }
 
 
@@ -78,6 +92,8 @@ class ClientTxnHandle {
 
   size_t thread_id_ = 0;
 
+  bool txn_commited_ = false;
+
  private:
 
   inline TxnEvent StartTxn() {
@@ -87,14 +103,17 @@ class ClientTxnHandle {
 
   inline TxnEvent AbortTxn() {
     txn_manager_.AbortTransaction(this->curr_txn_);
+    txn_commited_ = false;
     return TxnEvent::NONE;
   }
 
   inline TxnEvent CommitTxn() {
     auto result = txn_manager_.CommitTransaction(this->curr_txn_);
     if (result == ResultType::SUCCESS) {
+      txn_commited_ = true;
       return TxnEvent::COMMIT;
     } else {  // ResultType::Failure
+      txn_commited_ = false;
       return TxnEvent::ABORT;
     }
   }

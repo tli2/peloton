@@ -33,6 +33,10 @@ namespace {
   ([](ClientTxnHandle &w) { return w.m(); }) \
   }                                           \
   ;
+#define AND_INVOKE_WITH_ARG(m, arg)                         \
+  ([](ClientTxnHandle &w) { return w.m(arg); }) \
+  }                                           \
+  ;
 #define AND_IGNORE                            \
   return TxnEvent::NONE;                      \
   }                                           \
@@ -48,10 +52,6 @@ namespace {
 
 } // namespace
   // clang-format off
-
-// State transition diagram of ClientTxnState
-// The invalid event (e.g.) COMMIT/ABORT on IDLE state is not handled
-// in this diagram but is expected to be checked on the upper layer
 DEF_TRANSITION_GRAPH
     DEFINE_STATE(IDLE)
         ON(IMP_START) SET_STATE_TO(IMP_STARTED) AND_INVOKE(StartTxn)
