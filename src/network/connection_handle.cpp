@@ -51,6 +51,7 @@ namespace network {
  *  ClientSocketWrapper, respectively.
  *
  */
+namespace {
 // Underneath the hood these macro is defining the static method
 // ConnectionHandle::StateMachine::Delta.
 // Together they compose a nested switch statement. Running the function on any
@@ -101,6 +102,7 @@ namespace network {
 
 #define END_STATE_DEF \
   ON(TERMINATE) SET_STATE_TO(CLOSING) AND_INVOKE(TryCloseConnection) END_DEF
+} // namespace
 
 // clang-format off
 DEF_TRANSITION_GRAPH
